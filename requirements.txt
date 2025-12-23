@@ -17,7 +17,6 @@ conda-pack==0.5.0
 contextvars==2.4
 cryptography==2.0.3
 cycler==0.10.0
-Cython==0.29.6
 dask==0.20.2
 dataclasses==0.8
 decorator==4.3.0
@@ -89,7 +88,6 @@ PySocks==1.6.7
 python-dateutil==2.8.0
 python-gflags==3.1.2
 PyWavelets==1.0.1
-PyYAML==5.4.1
 pyzmq==17.1.2
 qtconsole==4.4.2
 requests==2.25.0
@@ -98,14 +96,12 @@ rsa==3.4.2
 ruamel.yaml==0.11.14
 s3transfer==0.1.13
 scikit-image==0.14.1
-scikit-learn==0.23.2
 scipy==1.5.4
 Send2Trash==1.5.0
 sklearn==0.0
 tabulate==0.8.7
 tensorboard==2.4.0
 tensorboard-plugin-wit==1.7.0
-tensorboardX==2.1
 tensorpack==0.10.1
 termcolor==1.1.0
 terminado==0.8.1
@@ -117,7 +113,6 @@ torch==1.1.0
 torchpack==0.2.2
 torchvision==0.2.1
 tornado==5.1
-tqdm==4.53.0
 traitlets==4.3.2
 typing-extensions==3.7.4.3
 urllib3==1.22
