@@ -5,15 +5,29 @@ import sys
 import traceback
 import time
 import pickle
-from collections import OrderedDict
 import yaml
 import h5py
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from collections import OrderedDict
 from torch.autograd import Variable
-from torchpack.runner.hooks import PaviLogger
+
+import collections
+if sys.version_info >= (3, 10):
+    from collections.abc import Iterable, Mapping, Sequence, MutableMapping
+    collections.Iterable = Iterable
+    collections.Mapping = Mapping
+    collections.Sequence = Sequence
+    collections.MutableMapping = MutableMapping
+# ==========================================================
+
+try:
+    from torchpack.runner.hooks import PaviLogger
+except ImportError:
+    # Nếu không cài torchpack hoặc không dùng Pavi, chương trình vẫn chạy được
+    PaviLogger = None
 
 
 class IO():
@@ -29,13 +43,14 @@ class IO():
 
     def log(self, *args, **kwargs):
         try:
-            if self.pavi_logger is None:
+            if self.pavi_logger is None and PaviLogger is not None:
                 url = 'http://pavi.parrotsdnn.org/log'
                 with open(self.session_file, 'r') as f:
                     info = dict(session_file=self.session_file, session_text=f.read(), model_text=self.model_text)
                 self.pavi_logger = PaviLogger(url)
                 self.pavi_logger.connect(self.work_dir, info=info)
-            self.pavi_logger.log(*args, **kwargs)
+            if self.pavi_logger:
+                self.pavi_logger.log(*args, **kwargs)
         except:  #pylint: disable=W0702
             pass
 
@@ -97,18 +112,13 @@ class IO():
 
     def save_model(self, model, name):
         model_path = f'{self.work_dir}/{name}'
-        # symlink = f'{self.work_dir}/latest_model.pt'
         state_dict = model.state_dict()
         weights = OrderedDict([[''.join(k.split('module.')), v.cpu()] for k, v in state_dict.items()])
         torch.save(weights, model_path)
-        # os.symlink(model_path, symlink)
         self.print_log(f'The model has been saved as {model_path}.')
 
     def save_arg(self, arg):
-
         self.session_file = f'{self.work_dir}/config.yaml'
-
-        # save arg
         arg_dict = vars(arg)
         if not os.path.exists(self.work_dir):
             os.makedirs(self.work_dir)
@@ -118,7 +128,6 @@ class IO():
 
     def print_log(self, str, print_time=True):
         if print_time:
-            # localtime = time.asctime(time.localtime(time.time()))
             str = time.strftime("[%m.%d.%y|%X] ", time.localtime()) + str
 
         if self.print_to_screen:
@@ -163,15 +172,7 @@ def str2bool(v):
 
 
 def str2dict(v):
-    return eval(f'dict({v})')  #pylint: disable=W0123
-
-
-def _import_class_0(name):
-    components = name.split('.')
-    mod = __import__(components[0])
-    for comp in components[1:]:
-        mod = getattr(mod, comp)
-    return mod
+    return eval(f'dict({v})')
 
 
 def import_class(import_str):
@@ -190,7 +191,7 @@ class DictAction(argparse.Action):
         super(DictAction, self).__init__(option_strings, dest, **kwargs)
 
     def __call__(self, parser, namespace, values, option_string=None):
-        input_dict = eval(f'dict({values})')  #pylint: disable=W0123
+        input_dict = eval(f'dict({values})')
         output_dict = getattr(namespace, self.dest)
         for k in input_dict:
             output_dict[k] = input_dict[k]

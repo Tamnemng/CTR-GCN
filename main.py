@@ -1,4 +1,18 @@
 #!/usr/bin/env python
+
+import collections
+try:
+    from collections import Iterable
+except ImportError:
+    from collections.abc import Iterable
+    collections.Iterable = Iterable
+# Lặp lại cho Mapping nếu cần
+try:
+    from collections import Mapping
+except ImportError:
+    from collections.abc import Mapping
+    collections.Mapping = Mapping
+    
 from __future__ import print_function
 
 import argparse
