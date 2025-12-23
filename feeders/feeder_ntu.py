@@ -77,6 +77,21 @@ class Feeder(Dataset):
         label = self.label[index]
         data_numpy = np.array(data_numpy)
         valid_frame_num = np.sum(data_numpy.sum(0).sum(-1).sum(-1) != 0)
+
+        # ===============================================================
+        # FIX START: Tự động thay thế các mẫu lỗi (0 frame) bằng mẫu kế tiếp
+        # Nếu gặp mẫu 0 frame, chương trình sẽ không crash mà tìm index tiếp theo hợp lệ
+        # ===============================================================
+        while valid_frame_num == 0:
+            index = (index + 1) % len(self.data)
+            data_numpy = self.data[index]
+            label = self.label[index]
+            data_numpy = np.array(data_numpy)
+            valid_frame_num = np.sum(data_numpy.sum(0).sum(-1).sum(-1) != 0)
+        # ===============================================================
+        # FIX END
+        # ===============================================================
+
         # reshape Tx(MVC) to CTVM
         data_numpy = tools.valid_crop_resize(data_numpy, valid_frame_num, self.p_interval, self.window_size)
         if self.random_rot:
