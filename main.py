@@ -2,17 +2,17 @@
 from __future__ import print_function
 
 import collections
-try:
-    from collections import Iterable
-except ImportError:
-    from collections.abc import Iterable
+import sys
+# ==========================================================
+# FIX: Tương thích Python 3.10+ (Patch cho collections.Iterable)
+# Đoạn này bắt buộc phải chạy trước khi import các thư viện khác
+if sys.version_info >= (3, 10):
+    from collections.abc import Iterable, Mapping, Sequence, MutableMapping
     collections.Iterable = Iterable
-# Lặp lại cho Mapping nếu cần
-try:
-    from collections import Mapping
-except ImportError:
-    from collections.abc import Mapping
     collections.Mapping = Mapping
+    collections.Sequence = Sequence
+    collections.MutableMapping = MutableMapping
+# ==========================================================
 
 import argparse
 import inspect
@@ -20,10 +20,9 @@ import os
 import pickle
 import random
 import shutil
-import sys
+import traceback
 import time
 from collections import OrderedDict
-import traceback
 from sklearn.metrics import confusion_matrix
 import csv
 import numpy as np
@@ -39,7 +38,6 @@ from tensorboardX import SummaryWriter
 from tqdm import tqdm
 
 from torchlight import DictAction
-
 
 import resource
 rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
@@ -227,13 +225,13 @@ class Processor():
                 arg.model_saved_name = os.path.join(arg.work_dir, 'runs')
                 if os.path.isdir(arg.model_saved_name):
                     print('log_dir: ', arg.model_saved_name, 'already exist')
-                    answer = input('delete it? y/n:')
-                    if answer == 'y':
-                        shutil.rmtree(arg.model_saved_name)
-                        print('Dir removed: ', arg.model_saved_name)
-                        input('Refresh the website of tensorboard by pressing any keys')
-                    else:
-                        print('Dir not removed: ', arg.model_saved_name)
+                    # answer = input('delete it? y/n:')
+                    # if answer == 'y':
+                    #     shutil.rmtree(arg.model_saved_name)
+                    #     print('Dir removed: ', arg.model_saved_name)
+                    #     input('Refresh the website of tensorboard by pressing any keys')
+                    # else:
+                    print('Dir not removed: ', arg.model_saved_name)
                 self.train_writer = SummaryWriter(os.path.join(arg.model_saved_name, 'train'), 'train')
                 self.val_writer = SummaryWriter(os.path.join(arg.model_saved_name, 'val'), 'val')
             else:
@@ -574,7 +572,8 @@ if __name__ == '__main__':
     p = parser.parse_args()
     if p.config is not None:
         with open(p.config, 'r') as f:
-            default_arg = yaml.load(f)
+            # FIX: Dùng safe_load thay vì load để tương thích PyYAML mới
+            default_arg = yaml.safe_load(f)
         key = vars(p).keys()
         for k in default_arg.keys():
             if k not in key:
