@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+from __future__ import print_function
 
 import collections
 try:
@@ -12,8 +13,6 @@ try:
 except ImportError:
     from collections.abc import Mapping
     collections.Mapping = Mapping
-    
-from __future__ import print_function
 
 import argparse
 import inspect
