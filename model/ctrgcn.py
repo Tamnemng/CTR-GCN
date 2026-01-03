@@ -115,7 +115,7 @@ class MultiScale_TemporalConv(nn.Module):
             nn.BatchNorm2d(branch_channels),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=(3,1), stride=(stride,1), padding=(1,0)),
-            nn.BatchNorm2d(branch_channels)  # 为什么还要加bn
+            nn.BatchNorm2d(branch_channels)
         ))
 
         self.branches.append(nn.Sequential(
@@ -244,30 +244,88 @@ class unit_gcn(nn.Module):
         y = self.bn(y)
         y += self.down(x)
         y = self.relu(y)
-
-
         return y
+
+# =============================================================================
+# [NEW] TDF Module Integration
+# =============================================================================
+class TDF_Module(nn.Module):
+    def __init__(self, in_channels, reduction=4):
+        super(TDF_Module, self).__init__()
+        # Giảm số kênh 4 lần để tiết kiệm tính toán (Bottleneck)
+        # Nếu kênh ít quá (<4) thì giữ nguyên
+        mid_channels = in_channels // reduction if in_channels > reduction else in_channels
+
+        self.avg_pool = nn.AdaptiveAvgPool2d(1) # Pool không gian (V)
+        
+        # Nhánh Temporal Excitation
+        self.conv1 = nn.Conv1d(in_channels, mid_channels, kernel_size=1)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv1d(mid_channels, in_channels, kernel_size=1)
+        self.sigmoid = nn.Sigmoid()
+
+        # --- QUAN TRỌNG: Zero Init ---
+        # Khởi tạo weight lớp cuối = 0 để ban đầu TDF không làm biến đổi dữ liệu gốc
+        nn.init.constant_(self.conv2.weight, 0)
+        nn.init.constant_(self.conv2.bias, 0)
+
+    def forward(self, x):
+        # Input x: (N, C, T, V)
+        N, C, T, V = x.size()
+
+        # 1. Global Spatial Pooling: Lấy trung bình theo chiều V (Khớp)
+        # (N, C, T, V) -> (N, C, T)
+        y = x.mean(-1) 
+
+        # 2. Temporal Excitation
+        y = self.relu(self.conv1(y))
+        y = self.conv2(y)
+        
+        # 3. Tạo Mask (0-1)
+        mask = self.sigmoid(y) # (N, C, T)
+
+        # 4. Scale: Nhân ngược lại vào Input
+        # Unsqueeze(-1) để khớp chiều: (N, C, T, 1) * (N, C, T, V)
+        return x * mask.unsqueeze(-1)
 
 
 class TCN_GCN_unit(nn.Module):
     def __init__(self, in_channels, out_channels, A, stride=1, residual=True, adaptive=True, kernel_size=5, dilations=[1,2]):
         super(TCN_GCN_unit, self).__init__()
+        
+        # 1. Spatial Module (GCN)
         self.gcn1 = unit_gcn(in_channels, out_channels, A, adaptive=adaptive)
+        
+        # 2. [NEW] Temporal Discrimination Focus (TDF)
+        # Nó nhận đầu vào là out_channels (vì gcn1 đã đổi kênh rồi)
+        self.tdf = TDF_Module(out_channels)
+        
+        # 3. Temporal Module (TCN)
         self.tcn1 = MultiScale_TemporalConv(out_channels, out_channels, kernel_size=kernel_size, stride=stride, dilations=dilations,
                                             residual=False)
         self.relu = nn.ReLU(inplace=True)
+        
+        # Residual connection
         if not residual:
             self.residual = lambda x: 0
-
         elif (in_channels == out_channels) and (stride == 1):
             self.residual = lambda x: x
-
         else:
             self.residual = unit_tcn(in_channels, out_channels, kernel_size=1, stride=stride)
 
     def forward(self, x):
-        y = self.relu(self.tcn1(self.gcn1(x)) + self.residual(x))
-        return y
+        # Luồng đi: Input -> GCN -> TDF -> TCN -> Cộng Residual -> ReLU
+        
+        x_gcn = self.gcn1(x)        # (N, Out, T, V)
+        
+        # TDF lọc nhiễu thời gian
+        x_tdf = self.tdf(x_gcn)     # (N, Out, T, V)
+        
+        # TCN xử lý chuyển động
+        x_tcn = self.tcn1(x_tdf)    # (N, Out, T, V)
+        
+        y = x_tcn + self.residual(x)
+        return self.relu(y)
 
 
 class Model(nn.Module):
