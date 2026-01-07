@@ -49,6 +49,34 @@ def weights_init(m):
             m.bias.data.fill_(0)
 
 
+# --- MODULE MỚI: TEMPORAL ATTENTION (STEP CATFormer Inspired) ---
+class TemporalAttention(nn.Module):
+    def __init__(self, in_channels, num_heads=4, dropout=0.1):
+        super().__init__()
+        # Multi-head Self Attention: Học mối quan hệ giữa các frame
+        self.mha = nn.MultiheadAttention(embed_dim=in_channels, num_heads=num_heads, dropout=dropout)
+        self.ln = nn.LayerNorm(in_channels)
+        
+    def forward(self, x):
+        # Input x: (N, C, T) - Đặc trưng sau khi đã pool V và M
+        N, C, T = x.size()
+        
+        # PyTorch MultiheadAttention yêu cầu input shape là (Seq_Len, Batch, Embed_Dim)
+        # Tương ứng là (T, N, C)
+        x = x.permute(2, 0, 1) 
+        
+        # Self-Attention: Query=x, Key=x, Value=x
+        attn_output, _ = self.mha(x, x, x)
+        
+        # Add & Norm (Residual connection)
+        x = self.ln(x + attn_output) 
+        
+        # Trả về shape cũ (N, C, T)
+        x = x.permute(1, 2, 0) 
+        return x
+# ----------------------------------------------------------------
+
+
 class TemporalConv(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, dilation=1):
         super(TemporalConv, self).__init__()
@@ -115,7 +143,7 @@ class MultiScale_TemporalConv(nn.Module):
             nn.BatchNorm2d(branch_channels),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=(3,1), stride=(stride,1), padding=(1,0)),
-            nn.BatchNorm2d(branch_channels)  # 为什么还要加bn
+            nn.BatchNorm2d(branch_channels)  
         ))
 
         self.branches.append(nn.Sequential(
@@ -298,7 +326,7 @@ class Model(nn.Module):
         self.l8 = TCN_GCN_unit(base_channel*2, base_channel*4, A, stride=2, adaptive=adaptive)
         self.l9 = TCN_GCN_unit(base_channel*4, base_channel*4, A, adaptive=adaptive)
         self.l10 = TCN_GCN_unit(base_channel*4, base_channel*4, A, adaptive=adaptive)
-
+        self.temporal_att = TemporalAttention(in_channels=base_channel*4)
         self.fc = nn.Linear(base_channel*4, num_class)
         nn.init.normal_(self.fc.weight, 0, math.sqrt(2. / num_class))
         bn_init(self.data_bn, 1)
@@ -326,11 +354,10 @@ class Model(nn.Module):
         x = self.l8(x)
         x = self.l9(x)
         x = self.l10(x)
-
-        # N*M,C,T,V
-        c_new = x.size(1)
-        x = x.view(N, M, c_new, -1)
-        x = x.mean(3).mean(1)
+        NM, C, T, V = x.size()
+        x = x.view(N, M, C, T, V)
+        x = x.mean(4).mean(1) 
+        x = self.temporal_att(x) 
+        x = x.mean(2)
         x = self.drop_out(x)
-
         return self.fc(x)
