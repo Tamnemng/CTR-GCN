@@ -270,6 +270,57 @@ class TCN_GCN_unit(nn.Module):
         return y
 
 
+# =========================================================================
+# NEW: Helper functions for Hierarchical Structure
+# =========================================================================
+def get_part_graph(num_parts=5):
+    # Generates a basic adjacency matrix for 5 body parts
+    # 0: Torso, 1: Left Arm, 2: Right Arm, 3: Left Leg, 4: Right Leg
+    # 3 Subsets: Self, Inward (to Center), Outward (from Center)
+    A = np.zeros((3, num_parts, num_parts))
+    
+    # Subset 0: Self-loops
+    np.fill_diagonal(A[0], 1)
+    
+    # Subset 1: Connection to Torso (Center)
+    # 1->0, 2->0, 3->0, 4->0
+    A[1, 0, 1] = 1
+    A[1, 0, 2] = 1
+    A[1, 0, 3] = 1
+    A[1, 0, 4] = 1
+    
+    # Subset 2: Connection from Torso
+    # 0->1, 0->2, 0->3, 0->4
+    A[2, 1, 0] = 1
+    A[2, 2, 0] = 1
+    A[2, 3, 0] = 1
+    A[2, 4, 0] = 1
+    
+    return A
+
+def get_ntu_part_pooling_matrix():
+    # Maps 25 joints to 5 parts
+    # Torso (0): 0, 1, 2, 3, 20
+    # L-Arm (1): 4, 5, 6, 7, 21, 22
+    # R-Arm (2): 8, 9, 10, 11, 23, 24
+    # L-Leg (3): 12, 13, 14, 15
+    # R-Leg (4): 16, 17, 18, 19
+    mat = torch.zeros(5, 25)
+    
+    groups = [
+        [0, 1, 2, 3, 20],       # Torso
+        [4, 5, 6, 7, 21, 22],   # L-Arm
+        [8, 9, 10, 11, 23, 24], # R-Arm
+        [12, 13, 14, 15],       # L-Leg
+        [16, 17, 18, 19]        # R-Leg
+    ]
+    
+    for i, group in enumerate(groups):
+        for j in group:
+            mat[i, j] = 1.0 / len(group) # Average pooling
+            
+    return mat
+
 class Model(nn.Module):
     def __init__(self, num_class=60, num_point=25, num_person=2, graph=None, graph_args=dict(), in_channels=3,
                  drop_out=0, adaptive=True):
@@ -299,7 +350,31 @@ class Model(nn.Module):
         self.l9 = TCN_GCN_unit(base_channel*4, base_channel*4, A, adaptive=adaptive)
         self.l10 = TCN_GCN_unit(base_channel*4, base_channel*4, A, adaptive=adaptive)
 
-        self.fc = nn.Linear(base_channel*4, num_class)
+        # ===========================================================
+        # Hierarchical Part Branch Setup
+        # ===========================================================
+        self.use_part_branch = (num_point == 25) # Only enable for NTU-style 25 joints
+        
+        if self.use_part_branch:
+            # Register the pooling matrix as a buffer (so it moves to GPU automatically)
+            self.register_buffer('part_matrix', get_ntu_part_pooling_matrix())
+            
+            # Get basic topology for 5 parts
+            A_part = get_part_graph(5)
+            
+            # Parallel Part Layers (starting after l5, so input channels = 128)
+            # They mirror the structure of l6-l10 but for 5 nodes
+            self.part_l6 = TCN_GCN_unit(base_channel*2, base_channel*2, A_part, adaptive=adaptive)
+            self.part_l7 = TCN_GCN_unit(base_channel*2, base_channel*2, A_part, adaptive=adaptive)
+            self.part_l8 = TCN_GCN_unit(base_channel*2, base_channel*4, A_part, stride=2, adaptive=adaptive)
+            self.part_l9 = TCN_GCN_unit(base_channel*4, base_channel*4, A_part, adaptive=adaptive)
+            self.part_l10 = TCN_GCN_unit(base_channel*4, base_channel*4, A_part, adaptive=adaptive)
+            
+            # Final classifier input dimension doubles because we concat Main + Part features
+            self.fc = nn.Linear(base_channel*4 * 2, num_class)
+        else:
+            self.fc = nn.Linear(base_channel*4, num_class)
+
         nn.init.normal_(self.fc.weight, 0, math.sqrt(2. / num_class))
         bn_init(self.data_bn, 1)
         if drop_out:
@@ -316,21 +391,48 @@ class Model(nn.Module):
         x = x.permute(0, 4, 3, 1, 2).contiguous().view(N, M * V * C, T)
         x = self.data_bn(x)
         x = x.view(N, M, V, C, T).permute(0, 1, 3, 4, 2).contiguous().view(N * M, C, T, V)
+        
+        # Shared early layers
         x = self.l1(x)
         x = self.l2(x)
         x = self.l3(x)
         x = self.l4(x)
-        x = self.l5(x)
+        x = self.l5(x) # Output: (N*M, 128, T/2, 25)
+        
+        # Branching point
+        if self.use_part_branch:
+            # === Part Path ===
+            # Pooling: (N*M, C, T, 25) x (5, 25)^T -> (N*M, C, T, 5)
+            # einsum: n=batch, c=channel, t=time, v=25 joints, p=5 parts
+            x_part = torch.einsum('nctv,pv->nctp', x, self.part_matrix)
+            
+            x_part = self.part_l6(x_part)
+            x_part = self.part_l7(x_part)
+            x_part = self.part_l8(x_part)
+            x_part = self.part_l9(x_part)
+            x_part = self.part_l10(x_part)
+            
+            # GAP for Part Branch
+            c_new = x_part.size(1)
+            x_part = x_part.view(N, M, c_new, -1)
+            x_part = x_part.mean(3).mean(1) # (N, 256)
+        
+        # === Main Path (Original) ===
         x = self.l6(x)
         x = self.l7(x)
         x = self.l8(x)
         x = self.l9(x)
         x = self.l10(x)
 
-        # N*M,C,T,V
+        # GAP for Main Branch
         c_new = x.size(1)
         x = x.view(N, M, c_new, -1)
-        x = x.mean(3).mean(1)
+        x = x.mean(3).mean(1) # (N, 256)
+        
+        # === Fusion ===
+        if self.use_part_branch:
+            x = torch.cat([x, x_part], dim=1) # (N, 512)
+            
         x = self.drop_out(x)
 
         return self.fc(x)
