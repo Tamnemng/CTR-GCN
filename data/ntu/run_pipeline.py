@@ -27,12 +27,11 @@ STAT_DIR = osp.join(osp.dirname(osp.abspath(__file__)), 'statistics')
 # STEP 1  get_raw_skes_data
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _get_raw_bodies_data(skes_path, ske_name, frames_drop_skes, frames_drop_logger):
-    ske_file = osp.join(skes_path, ske_name + '.skeleton')
-    assert osp.exists(ske_file), 'Error: Skeleton file %s not found' % ske_file
-    print('Reading data from %s' % ske_file[-29:])
-    with open(ske_file, 'r') as fr:
-        str_data = fr.readlines()
+def _get_raw_bodies_data(zf, zip_prefix, ske_name, frames_drop_skes, frames_drop_logger):
+    zip_entry = zip_prefix + ske_name + '.skeleton'
+    print('Reading data from %s' % ske_name)
+    with zf.open(zip_entry) as f:
+        str_data = f.read().decode('utf-8').splitlines()
 
     num_frames = int(str_data[0].strip('\r\n'))
     frames_drop = []
@@ -90,8 +89,8 @@ def _get_raw_bodies_data(skes_path, ske_name, frames_drop_skes, frames_drop_logg
             'num_frames': num_frames - num_frames_drop}
 
 
-def step1_get_raw_skes_data(skes_path, work_dir):
-    """Read .skeleton files → raw_data/raw_skes_data.pkl"""
+def step1_get_raw_skes_data(zip_path, work_dir):
+    """Read .skeleton files directly from zip → raw_data/raw_skes_data.pkl  (no extraction needed)"""
     raw_data_dir = osp.join(work_dir, 'raw_data')
     os.makedirs(raw_data_dir, exist_ok=True)
 
@@ -110,17 +109,27 @@ def step1_get_raw_skes_data(skes_path, work_dir):
     num_files = skes_name.size
     print('\n[Step 1] Found %d available skeleton files.' % num_files)
 
+    # Detect the prefix path inside the zip (e.g. "nturgb+d_skeletons/")
+    with zipfile.ZipFile(zip_path, 'r') as zf:
+        all_entries = zf.namelist()
+    ske_entries = [n for n in all_entries if n.endswith('.skeleton')]
+    assert ske_entries, 'No .skeleton files found inside %s' % zip_path
+    sample_entry = ske_entries[0]
+    zip_prefix = sample_entry[: len(sample_entry) - len(osp.basename(sample_entry))]
+    print('[Step 1] Zip prefix detected: "%s"' % zip_prefix)
+
     raw_skes_data = []
     frames_cnt = np.zeros(num_files, dtype=np_int)
 
-    for idx, ske_name in enumerate(skes_name):
-        bodies_data = _get_raw_bodies_data(
-            skes_path, ske_name, frames_drop_skes, frames_drop_logger)
-        raw_skes_data.append(bodies_data)
-        frames_cnt[idx] = bodies_data['num_frames']
-        if (idx + 1) % 1000 == 0:
-            print('Processed: %.2f%% (%d / %d)' %
-                  (100.0 * (idx + 1) / num_files, idx + 1, num_files))
+    with zipfile.ZipFile(zip_path, 'r') as zf:
+        for idx, ske_name in enumerate(skes_name):
+            bodies_data = _get_raw_bodies_data(
+                zf, zip_prefix, ske_name, frames_drop_skes, frames_drop_logger)
+            raw_skes_data.append(bodies_data)
+            frames_cnt[idx] = bodies_data['num_frames']
+            if (idx + 1) % 1000 == 0:
+                print('Processed: %.2f%% (%d / %d)' %
+                      (100.0 * (idx + 1) / num_files, idx + 1, num_files))
 
     with open(save_data_pkl, 'wb') as fw:
         pickle.dump(raw_skes_data, fw, pickle.HIGHEST_PROTOCOL)
@@ -569,27 +578,8 @@ def main():
     assert osp.isfile(zip_path), 'Zip file not found: %s' % zip_path
     os.makedirs(work_dir, exist_ok=True)
 
-    # ── Extract zip ──────────────────────────────────────────────────────────
-    skes_path = osp.join(work_dir, 'nturgb+d_skeletons')
-    if not osp.exists(skes_path):
-        print('\n[Extract] Extracting %s ...' % zip_path)
-        with zipfile.ZipFile(zip_path, 'r') as zf:
-            zf.extractall(work_dir)
-        # The zip may contain a top-level folder; try to detect it
-        if not osp.exists(skes_path):
-            candidates = [d for d in os.listdir(work_dir)
-                          if osp.isdir(osp.join(work_dir, d)) and 'skeleton' in d.lower()]
-            if candidates:
-                skes_path = osp.join(work_dir, candidates[0])
-            else:
-                # fall back: skeleton files might be directly in work_dir
-                skes_path = work_dir
-        print('[Extract] Skeleton files at: %s' % skes_path)
-    else:
-        print('[Extract] Skeleton directory already exists, skipping extraction.')
-
-    # ── Run pipeline ─────────────────────────────────────────────────────────
-    step1_get_raw_skes_data(skes_path, work_dir)
+    # ── Run pipeline (reads .skeleton directly from zip, no extraction) ──────
+    step1_get_raw_skes_data(zip_path, work_dir)
     step2_get_raw_denoised_data(work_dir)
     step3_seq_transformation(work_dir, output_path)
 
