@@ -470,17 +470,19 @@ def _seq_translation(skes_joints):
     return skes_joints
 
 
-def _align_frames(skes_joints, frames_cnt):
-    num_skes = len(skes_joints)
+def _align_frames_subset(skes_joints, frames_cnt, indices):
+    """Align only the samples at `indices` to avoid allocating the full dataset in RAM."""
     max_num_frames = frames_cnt.max()
-    aligned = np.zeros((num_skes, max_num_frames, 150), dtype=np.float32)
-    for idx, ske_joints in enumerate(skes_joints):
+    n = len(indices)
+    aligned = np.zeros((n, max_num_frames, 150), dtype=np.float32)
+    for out_idx, src_idx in enumerate(indices):
+        ske_joints = skes_joints[src_idx]
         num_frames = ske_joints.shape[0]
         num_bodies = 1 if ske_joints.shape[1] == 75 else 2
         if num_bodies == 1:
-            aligned[idx, :num_frames] = np.hstack((ske_joints, np.zeros_like(ske_joints)))
+            aligned[out_idx, :num_frames] = np.hstack((ske_joints, np.zeros_like(ske_joints)))
         else:
-            aligned[idx, :num_frames] = ske_joints
+            aligned[out_idx, :num_frames] = ske_joints
     return aligned
 
 
@@ -536,22 +538,24 @@ def step3_seq_transformation(work_dir, output_path):
     print('\n[Step 3] Applying sequence translation ...')
     skes_joints = _seq_translation(skes_joints)
 
-    print('[Step 3] Aligning frames ...')
-    skes_joints = _align_frames(skes_joints, frames_cnt)
-
     os.makedirs(output_path, exist_ok=True)
 
     for evaluation in ['CS', 'CV']:
         train_indices, test_indices = _get_indices(performer, camera, evaluation)
-        train_x = skes_joints[train_indices]
+
+        print('[Step 3] Aligning train frames for %s (%d samples) ...' % (evaluation, len(train_indices)))
+        train_x = _align_frames_subset(skes_joints, frames_cnt, train_indices)
         train_y = _one_hot_vector(label[train_indices])
-        test_x  = skes_joints[test_indices]
-        test_y  = _one_hot_vector(label[test_indices])
+
+        print('[Step 3] Aligning test frames for %s (%d samples) ...' % (evaluation, len(test_indices)))
+        test_x = _align_frames_subset(skes_joints, frames_cnt, test_indices)
+        test_y = _one_hot_vector(label[test_indices])
 
         save_name = osp.join(output_path, 'NTU60_%s.npz' % evaluation)
         np.savez(save_name, x_train=train_x, y_train=train_y,
                              x_test=test_x,  y_test=test_y)
         print('[Step 3] Saved → %s' % save_name)
+        del train_x, test_x, train_y, test_y
 
 
 # ─────────────────────────────────────────────────────────────────────────────
